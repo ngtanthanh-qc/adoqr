@@ -1,0 +1,198 @@
+#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
+
+BeforeAll {
+    . $PSScriptRoot/_Bootstrap.ps1
+
+    function script:New-Result {
+        param($Id, $Status, $Severity = 'Medium', $Control = 'Test Control', $Finding = 'Manual review required.')
+        New-ControlResult -Id $Id -Status $Status -Severity $Severity -Control $Control -Finding $Finding
+    }
+}
+
+Describe 'Get-NotCheckedReasonCategory' {
+    It 'classifies common not-checked reasons' {
+        Get-NotCheckedReasonCategory 'Manual review required. Verify setting.' | Should -Be 'Manual review required'
+        Get-NotCheckedReasonCategory 'Requires -IncludeGraphCheck switch to cross-reference with Entra ID.' | Should -Be 'Prerequisite or permission needed'
+        Get-NotCheckedReasonCategory 'Could not retrieve org pipeline settings.' | Should -Be 'Data unavailable'
+        Get-NotCheckedReasonCategory 'Invite new users policy not found.' | Should -Be 'Setting not found'
+        Get-NotCheckedReasonCategory 'No Project Administrator members found to check.' | Should -Be 'No applicable data found'
+    }
+}
+
+Describe 'Build-NotCheckedSectionHtml' {
+    It 'returns an empty string when there are no not-checked controls' {
+        $org = [PSCustomObject]@{
+            Results = @((New-Result 'AUTH-01' 'PASS'))
+        }
+
+        Build-NotCheckedSectionHtml -OrgSummary $org -ProjectSummaries @() | Should -Be ''
+    }
+
+    It 'renders an explanation, reason groups, and scoped details' {
+        $org = [PSCustomObject]@{
+            Results = @(
+                (New-Result 'AUDIT-01' 'NOT CHECKED' 'Medium' 'Audit Log Backup' 'Manual review required. Verify audit logs are backed up to external storage.')
+            )
+        }
+        $projects = @(
+            [PSCustomObject]@{
+                Project = 'Web'
+                Results = @(
+                    (New-Result 'USER-02' 'NOT CHECKED' 'Medium' 'Deleted AAD Users' 'Requires -IncludeGraphCheck switch to cross-reference with Entra ID.'),
+                    (New-Result 'REPO-01' 'PASS' 'Low' 'Inactive Repositories' 'OK')
+                )
+            }
+        )
+
+        $html = Build-NotCheckedSectionHtml -OrgSummary $org -ProjectSummaries $projects
+        $html | Should -Match 'id="not-checked-section"'
+        $html | Should -Match 'Not checked does not mean failed'
+        $html | Should -Match 'Manual review required'
+        $html | Should -Match 'Prerequisite or permission needed'
+        $html | Should -Match 'Project: Web'
+        $html | Should -Match 'Why it was not checked'
+    }
+
+    It 'renders as a collapsible panel with a count badge and chevron in the summary' {
+        $org = [PSCustomObject]@{
+            Results = @(
+                (New-Result 'AUDIT-01' 'NOT CHECKED' 'Medium' 'Audit Log Backup' 'Manual review required.'),
+                (New-Result 'USER-02' 'NOT CHECKED' 'Medium' 'Deleted AAD Users' 'Requires -IncludeGraphCheck switch.')
+            )
+        }
+
+        $html = Build-NotCheckedSectionHtml -OrgSummary $org -ProjectSummaries @()
+        $html | Should -Match '<details[^>]*class="[^"]*\bsection-collapsible\b'
+        $html | Should -Match '<summary[^>]*class="[^"]*\bsection-collapsible-summary\b'
+        $html | Should -Match 'class="section-collapsible-count"[^>]*>2<'
+        $html | Should -Match 'class="section-collapsible-chevron"'
+        # Must not be open by default (no `open` attribute on the outer details)
+        $html | Should -Not -Match '<details[^>]*\bopen\b[^>]*class="[^"]*\bsection-collapsible\b'
+    }
+}
+
+Describe 'Write-ExecutiveHtmlReport' {
+    It 'embeds accepted-risk recalculation hooks for the executive summary' {
+        $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempDir | Out-Null
+        $filePath = Join-Path $tempDir 'executive.html'
+
+        $orgSummary = [PSCustomObject]@{
+            Pass = 1
+            Fail = 1
+            NotChecked = 0
+            ReportFile = 'org.md'
+            Results = @(
+                (New-Result 'AUTH-01' 'PASS' 'High' 'AAD Authentication' 'Organization is Azure AD backed.'),
+                (New-Result 'AUTH-05' 'FAIL' 'Medium' 'Conditional Access Policy' 'Conditional access is not enforced.')
+            )
+        }
+
+        $projectSummary = [PSCustomObject]@{
+            Project = 'Web'
+            Pass = 0
+            Fail = 1
+            NotChecked = 1
+            ReportFile = 'web.md'
+            Results = @(
+                (New-Result 'REPO-01' 'FAIL' 'High' 'Inactive Repositories' 'Repository is stale.'),
+                (New-Result 'AUDIT-01' 'NOT CHECKED' 'Medium' 'Audit Log Backup' 'Manual review required.')
+            )
+        }
+
+        $remediations = @(
+            [PSCustomObject]@{
+                ControlId = 'AUTH-05'
+                ControlName = 'Conditional Access Policy'
+                Severity = 'Medium'
+                Count = 1
+                AffectedAreas = @('Organization')
+                Finding = 'Conditional access is not enforced.'
+            },
+            [PSCustomObject]@{
+                ControlId = 'REPO-01'
+                ControlName = 'Inactive Repositories'
+                Severity = 'High'
+                Count = 1
+                AffectedAreas = @('Project: Web')
+                Finding = 'Repository is stale.'
+            }
+        )
+
+        try {
+            Write-ExecutiveHtmlReport -FilePath $filePath -OrgName 'Contoso' -OrgUrl 'https://dev.azure.com/Contoso' -ElapsedTime '00:00:05' -OrgSummary $orgSummary -ProjectSummaries @($projectSummary) -TopRemediations $remediations
+
+            $html = Get-Content -Path $filePath -Raw
+            $html | Should -Match 'adoqr\.acceptedControls\.Contoso'
+            $html | Should -Match 'window\.__adoqrCurrentRunControls\s*='
+            $html | Should -Match 'window\.__adoqrTopRemediations\s*='
+            $html | Should -Match 'data-summary-pass'
+            $html | Should -Match 'data-summary-fail'
+            $html | Should -Match 'data-org-fail'
+            $html | Should -Match 'data-project-row="Web"'
+            $html | Should -Match 'function applyAcceptedSummary'
+            $html | Should -Match 'visibilitychange'
+        }
+        finally {
+            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'renders installed/default extensions table and places nav link before run comparison' {
+        $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempDir | Out-Null
+        $filePath = Join-Path $tempDir 'executive.html'
+
+        $orgSummary = [PSCustomObject]@{
+            Pass = 2
+            Fail = 1
+            NotChecked = 0
+            ReportFile = 'org.md'
+            Results = @(
+                (New-Result 'EXT-01' 'PASS' 'High' 'Extension Review' 'All extensions are trusted.'),
+                (New-Result 'EXT-04' 'FAIL' 'High' 'Requested Extensions Review' '1 pending extension request.')
+            )
+            OrgExtensions = [PSCustomObject]@{
+                InstalledAvailable = $true
+                RequestedAvailable = $true
+                Installed = @(
+                    [PSCustomObject]@{ Name = 'Code Search'; Publisher = 'Microsoft'; Version = '1.0.0'; IsBuiltIn = $false; IsTrusted = $true; IsMicrosoft = $true },
+                    [PSCustomObject]@{ Name = 'Azure Artifacts'; Publisher = 'Microsoft'; Version = '2.3.0'; IsBuiltIn = $true; IsTrusted = $true; IsMicrosoft = $true },
+                    [PSCustomObject]@{ Name = 'Security DevOps'; Publisher = 'Microsoft'; Version = '2.3.0'; IsBuiltIn = $false; IsTrusted = $true; IsMicrosoft = $true }
+                )
+                Requested = @(
+                    [PSCustomObject]@{ Name = 'Contoso Insights'; Publisher = 'Contoso'; Status = 'pending' }
+                )
+            }
+        }
+
+        try {
+            Write-ExecutiveHtmlReport -FilePath $filePath -OrgName 'Contoso' -OrgUrl 'https://dev.azure.com/Contoso' -ElapsedTime '00:00:05' -OrgSummary $orgSummary -ProjectSummaries @() -TopRemediations @()
+
+            $html = Get-Content -Path $filePath -Raw
+            $html | Should -Match 'id="organization-extensions"'
+            $html | Should -Match 'Organization Extensions'
+            $html | Should -Match 'Installed:\s*</strong>\s*2'
+            $html | Should -Match 'Defaults:\s*</strong>\s*1'
+            $html | Should -Match 'Code Search'
+            $html | Should -Match '<th scope="col">Type</th>'
+            $html | Should -Not -Match 'Requested \('
+            $html | Should -Match 'href="#organization-extensions"'
+
+            $codeSearchIndex = $html.IndexOf('Code Search')
+            $azureArtifactsIndex = $html.IndexOf('Azure Artifacts')
+            $codeSearchIndex | Should -BeGreaterThan -1
+            $azureArtifactsIndex | Should -BeGreaterThan -1
+            $codeSearchIndex | Should -BeLessThan $azureArtifactsIndex
+
+            $extensionsIndex = $html.IndexOf('href="#organization-extensions"')
+            $comparisonIndex = $html.IndexOf('href="#comparison-section"')
+            $extensionsIndex | Should -BeGreaterThan -1
+            $comparisonIndex | Should -BeGreaterThan -1
+            $extensionsIndex | Should -BeLessThan $comparisonIndex
+        }
+        finally {
+            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}

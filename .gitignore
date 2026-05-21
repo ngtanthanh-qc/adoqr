@@ -1,0 +1,44 @@
+# adoqr — Azure DevOps Quick Review
+# PowerShell + Docker project
+
+# ── Secrets & credentials ──
+*.env
+*.publishsettings
+*.pfx
+
+# ── OS artifacts ──
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# ── Editor / IDE ──
+.vs/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.history/
+
+# ── Pester / test output ──
+TestResults/
+*.Tests.xml
+coverage*.xml
+
+# ── Logs ──
+*.log
+[Ll]og/
+[Ll]ogs/
+
+# ── Assessment output ──
+assessments/
+
+# ── Temporary & backup files ──
+~$*
+*~
+*.tmp
+*.bak
+
+# ── User settings (local overrides — not committed) ──
+adoqr.settings.psd1
