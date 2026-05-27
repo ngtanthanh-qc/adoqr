@@ -326,6 +326,12 @@ your VS Code user data directory for cross-workspace availability:
 - "Explain the findings in the latest review report"
 - "How do I adopt the guest user best practices?"
 
+## Thanks to everyone who has contributed!
+
+<a href="https://github.com/microsoft/adoqr/graphs/contributors">
+  <img src="https://contributors-img.web.app/image?repo=microsoft/adoqr" />
+</a>
+
 ## Acknowledgements
 
 - [AzSK.ADO Security Scanner](https://github.com/azsk/ADOScanner) by the AzSK team
